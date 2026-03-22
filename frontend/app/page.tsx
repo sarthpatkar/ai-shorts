@@ -10,6 +10,7 @@ import AuthModal from "./components/AuthModal";
 import DownloadOptionsModal from "./components/DownloadOptionsModal";
 import {
   ApiError,
+  DEMO_VIDEO_META,
   createCheckout,
   fetchDownloadOptions,
   generateClips,
@@ -152,6 +153,7 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [failureReason, setFailureReason] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [isDemoModeActive, setIsDemoModeActive] = useState(false);
   const [openFilePickerSignal, setOpenFilePickerSignal] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -300,7 +302,7 @@ export default function Home() {
   const runGenerationRequest = useCallback(
     async (
       request: () => Promise<GenerateClipsResult>,
-      options?: { statusMessage?: string }
+      options?: { statusMessage?: string; demoMode?: boolean }
     ) => {
       const requestId = generationRequestIdRef.current + 1;
       generationRequestIdRef.current = requestId;
@@ -309,6 +311,7 @@ export default function Home() {
       setErrorMessage(null);
       setFailureReason(null);
       setStatusMessage(options?.statusMessage ?? null);
+      setIsDemoModeActive(Boolean(options?.demoMode));
       setViewerIndex(null);
       setJobId(null);
       setClips([]);
@@ -335,6 +338,7 @@ export default function Home() {
         if (generationRequestIdRef.current === requestId) {
           setLoading(false);
           setStatusMessage(null);
+          setIsDemoModeActive(false);
         }
       }
     },
@@ -347,6 +351,7 @@ export default function Home() {
       const videoFile = input.videoFile ?? null;
       if (!youtubeUrl && !videoFile) {
         setStatusMessage(null);
+        setIsDemoModeActive(false);
         setFailureReason(null);
         setErrorMessage("Provide a YouTube URL or upload a video file.");
         return;
@@ -354,6 +359,7 @@ export default function Home() {
 
       if (!input.userConfirmedRights) {
         setStatusMessage(null);
+        setIsDemoModeActive(false);
         setFailureReason(null);
         setErrorMessage("Please confirm rights before processing.");
         return;
@@ -373,6 +379,7 @@ export default function Home() {
   const handleDemoClick = useCallback(async () => {
     await runGenerationRequest(() => generateFromDemo(), {
       statusMessage: "Running demo using preloaded video",
+      demoMode: true,
     });
   }, [runGenerationRequest]
   );
@@ -736,6 +743,15 @@ export default function Home() {
         )}
         {statusMessage && !errorMessage && (
           <p className="status-note">{statusMessage}</p>
+        )}
+        {loading && isDemoModeActive && (
+          <div className="status-note">
+            <p>🎬 Demo Mode Activated</p>
+            <p>• Name: {DEMO_VIDEO_META.name}</p>
+            <p>• Duration: {DEMO_VIDEO_META.duration}</p>
+            <p>• Size: {DEMO_VIDEO_META.size}</p>
+            <p>• Source: {DEMO_VIDEO_META.source}</p>
+          </div>
         )}
         {loading && <LoadingState revealedCount={displayedClips.length} />}
 

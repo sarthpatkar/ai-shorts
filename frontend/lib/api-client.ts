@@ -28,6 +28,15 @@ type GenerateClipsInput = {
 };
 
 const REQUEST_TIMEOUT_MS = 1000 * 60 * 8;
+const DEMO_VIDEO_URL =
+  "https://lmhmjcuybuqlfynmvzav.supabase.co/storage/v1/object/public/clips/clips/demo/democlip.mp4";
+
+export const DEMO_VIDEO_META = {
+  name: "democlip.mp4",
+  duration: "30–40 seconds",
+  size: "5–15 MB",
+  source: "Supabase demo dataset",
+} as const;
 
 export class ApiError extends Error {
   code: ApiErrorCode;
@@ -328,7 +337,7 @@ export async function generateClips(
 export async function generateFromDemo(): Promise<GenerateClipsResult> {
   let response: Response;
   try {
-    response = await fetch("/democlip.mp4", {
+    response = await fetch(DEMO_VIDEO_URL, {
       method: "GET",
       cache: "no-store",
     });
