@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+python-multipart
+aiofiles
+requests
+yt-dlp
+supabase
+groq
+faster-whisper
+numpy
+Pillow
