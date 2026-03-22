@@ -1,0 +1,60 @@
+# ----------------------------
+# SYSTEM FILES
+# ----------------------------
+.DS_Store
+
+# ----------------------------
+# ENV & SECRETS
+# ----------------------------
+.env*
+!.env.example
+!.env.sample
+
+# cookies / sensitive files
+*cookies*.txt
+*.key
+*.pem
+*.p12
+
+# ----------------------------
+# FRONTEND (Next.js)
+# ----------------------------
+node_modules/
+.next/
+dist/
+build/
+
+# ----------------------------
+# PYTHON
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyd
+
+# virtual environments
+.venv/
+venv/
+
+# ----------------------------
+# BACKEND GENERATED FILES
+# ----------------------------
+backend/runs/
+backend/backend/runs/
+backend/cache/
+backend/data/
+backend/tmp/
+backend/temp/
+
+# ----------------------------
+# TEMP FILES
+# ----------------------------
+*.tmp
+*.temp
+*.swp
+*.swo
+*.part
+
+# ----------------------------
+# LOGS
+# ----------------------------
+*.log
