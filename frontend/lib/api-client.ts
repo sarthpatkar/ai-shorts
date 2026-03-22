@@ -325,6 +325,45 @@ export async function generateClips(
   };
 }
 
+export async function generateFromDemo(): Promise<GenerateClipsResult> {
+  let response: Response;
+  try {
+    response = await fetch("/democlip.mp4", {
+      method: "GET",
+      cache: "no-store",
+    });
+  } catch {
+    throw new ApiError(
+      "Failed to load the demo video. Please try again.",
+      "unavailable"
+    );
+  }
+
+  if (!response.ok) {
+    throw new ApiError(
+      "Failed to load the demo video. Please try again.",
+      "unavailable",
+      response.status
+    );
+  }
+
+  const blob = await response.blob();
+  if (blob.size <= 0) {
+    throw new ApiError(
+      "Demo video is unavailable. Please try again.",
+      "unavailable"
+    );
+  }
+
+  const demoFile = new File([blob], "democlip.mp4", {
+    type: blob.type || "video/mp4",
+  });
+  return generateClips({
+    videoFile: demoFile,
+    userConfirmedRights: true,
+  });
+}
+
 export async function refreshClipUrls(jobId: string): Promise<Clip[]> {
   const cleaned = jobId.trim();
   if (!cleaned) {

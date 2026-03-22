@@ -13,6 +13,7 @@ import {
   createCheckout,
   fetchDownloadOptions,
   generateClips,
+  generateFromDemo,
   refreshClipUrls,
   requestDownloadUrl,
   submitClipFeedback,
@@ -25,6 +26,7 @@ import type {
   DownloadOption,
   DownloadQuality,
   FeedbackTriggerType,
+  GenerateClipsResult,
 } from "@/lib/types";
 
 const WATCH_THRESHOLD_SECONDS = 5;
@@ -149,6 +151,7 @@ export default function Home() {
   const [revealedCount, setRevealedCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [failureReason, setFailureReason] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [openFilePickerSignal, setOpenFilePickerSignal] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -267,28 +270,45 @@ export default function Home() {
     [updateClipInteraction]
   );
 
-  const handleGenerate = useCallback(
-    async (input: GenerateInput) => {
-      const youtubeUrl = (input.youtubeUrl ?? "").trim();
-      const videoFile = input.videoFile ?? null;
-      if (!youtubeUrl && !videoFile) {
-        setFailureReason(null);
-        setErrorMessage("Provide a YouTube URL or upload a video file.");
-        return;
+  const applyGeneratedClips = useCallback((generated: GenerateClipsResult) => {
+    setJobId(generated.jobId);
+    setClips(generated.clips);
+    setClipInteractions((previous) => buildInteractionMap(generated.clips, previous));
+    setFavoriteMap((previous) => {
+      const next: Record<string, boolean> = {};
+      for (const clip of generated.clips) {
+        next[clip.id] = previous[clip.id] ?? false;
       }
-
-      if (!input.userConfirmedRights) {
-        setFailureReason(null);
-        setErrorMessage("Please confirm rights before processing.");
-        return;
+      return next;
+    });
+    setCaptionEnabledMap((previous) => {
+      const next: Record<string, boolean> = {};
+      for (const clip of generated.clips) {
+        next[clip.id] = previous[clip.id] ?? true;
       }
+      return next;
+    });
+    setTrimWindows((previous) => {
+      const next: Record<string, TrimWindow> = {};
+      for (const clip of generated.clips) {
+        next[clip.id] = previous[clip.id] ?? { start: 0, end: 1 };
+      }
+      return next;
+    });
+  }, []);
 
+  const runGenerationRequest = useCallback(
+    async (
+      request: () => Promise<GenerateClipsResult>,
+      options?: { statusMessage?: string }
+    ) => {
       const requestId = generationRequestIdRef.current + 1;
       generationRequestIdRef.current = requestId;
 
       setLoading(true);
       setErrorMessage(null);
       setFailureReason(null);
+      setStatusMessage(options?.statusMessage ?? null);
       setViewerIndex(null);
       setJobId(null);
       setClips([]);
@@ -297,53 +317,64 @@ export default function Home() {
       setDownloadModal((previous) => ({ ...previous, open: false }));
 
       try {
-        const generated = await generateClips({
-          youtubeUrl,
-          videoFile,
-          userConfirmedRights: input.userConfirmedRights,
-        });
+        const generated = await request();
         if (generationRequestIdRef.current !== requestId) {
           return;
         }
-
-        setJobId(generated.jobId);
-        setClips(generated.clips);
-        setClipInteractions((previous) => buildInteractionMap(generated.clips, previous));
-        setFavoriteMap((previous) => {
-          const next: Record<string, boolean> = {};
-          for (const clip of generated.clips) {
-            next[clip.id] = previous[clip.id] ?? false;
-          }
-          return next;
-        });
-        setCaptionEnabledMap((previous) => {
-          const next: Record<string, boolean> = {};
-          for (const clip of generated.clips) {
-            next[clip.id] = previous[clip.id] ?? true;
-          }
-          return next;
-        });
-        setTrimWindows((previous) => {
-          const next: Record<string, TrimWindow> = {};
-          for (const clip of generated.clips) {
-            next[clip.id] = previous[clip.id] ?? { start: 0, end: 1 };
-          }
-          return next;
-        });
+        setStatusMessage(null);
+        applyGeneratedClips(generated);
       } catch (error) {
         if (generationRequestIdRef.current !== requestId) {
           return;
         }
+        setStatusMessage(null);
         setClips([]);
         setFailureReason(error instanceof ApiError ? error.reason ?? null : null);
         setErrorMessage(toFriendlyError(error));
       } finally {
         if (generationRequestIdRef.current === requestId) {
           setLoading(false);
+          setStatusMessage(null);
         }
       }
     },
-    []
+    [applyGeneratedClips]
+  );
+
+  const handleGenerate = useCallback(
+    async (input: GenerateInput) => {
+      const youtubeUrl = (input.youtubeUrl ?? "").trim();
+      const videoFile = input.videoFile ?? null;
+      if (!youtubeUrl && !videoFile) {
+        setStatusMessage(null);
+        setFailureReason(null);
+        setErrorMessage("Provide a YouTube URL or upload a video file.");
+        return;
+      }
+
+      if (!input.userConfirmedRights) {
+        setStatusMessage(null);
+        setFailureReason(null);
+        setErrorMessage("Please confirm rights before processing.");
+        return;
+      }
+
+      await runGenerationRequest(() =>
+        generateClips({
+          youtubeUrl,
+          videoFile,
+          userConfirmedRights: input.userConfirmedRights,
+        })
+      );
+    },
+    [runGenerationRequest]
+  );
+
+  const handleDemoClick = useCallback(async () => {
+    await runGenerationRequest(() => generateFromDemo(), {
+      statusMessage: "Running demo using preloaded video",
+    });
+  }, [runGenerationRequest]
   );
 
   const handlePlay = useCallback(
@@ -680,6 +711,7 @@ export default function Home() {
           value={inputUrl}
           onChange={setInputUrl}
           onGenerate={handleGenerate}
+          onDemoClick={handleDemoClick}
           loading={loading}
           openFilePickerSignal={openFilePickerSignal}
         />
@@ -701,6 +733,9 @@ export default function Home() {
               </>
             )}
           </div>
+        )}
+        {statusMessage && !errorMessage && (
+          <p className="status-note">{statusMessage}</p>
         )}
         {loading && <LoadingState revealedCount={displayedClips.length} />}
 

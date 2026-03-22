@@ -12,6 +12,7 @@ type InputSectionProps = {
   value: string;
   onChange: (value: string) => void;
   onGenerate: (input: GenerateInput) => void | Promise<void>;
+  onDemoClick: () => void | Promise<void>;
   loading: boolean;
   openFilePickerSignal?: number;
 };
@@ -20,6 +21,7 @@ export default function InputSection({
   value,
   onChange,
   onGenerate,
+  onDemoClick,
   loading,
   openFilePickerSignal = 0,
 }: InputSectionProps) {
@@ -119,6 +121,16 @@ export default function InputSection({
       <div className="input-row">
         <button type="submit" disabled={!canSubmit} className="btn btn-primary">
           {loading ? "Processing..." : "Start Processing"}
+        </button>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => {
+            void onDemoClick();
+          }}
+          disabled={loading}
+        >
+          ✨ Try Demo (guaranteed to work)
         </button>
       </div>
 
