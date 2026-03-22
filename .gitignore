@@ -61,3 +61,5 @@ backend/temp/
 
 cookies.txt
 *cookies*.txt
+
+frontend/public/*.mp4
