@@ -19,6 +19,8 @@ type ApiErrorCode =
   | "request_failed"
   | "empty_response";
 
+type ApiFailureReason = string;
+
 type GenerateClipsInput = {
   youtubeUrl?: string;
   videoFile?: File | null;
@@ -30,12 +32,19 @@ const REQUEST_TIMEOUT_MS = 1000 * 60 * 8;
 export class ApiError extends Error {
   code: ApiErrorCode;
   status?: number;
+  reason?: ApiFailureReason | null;
 
-  constructor(message: string, code: ApiErrorCode, status?: number) {
+  constructor(
+    message: string,
+    code: ApiErrorCode,
+    status?: number,
+    reason?: ApiFailureReason | null
+  ) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.reason = reason ?? null;
   }
 }
 
@@ -85,6 +94,20 @@ function extractErrorMessage(payload: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function extractErrorReason(payload: unknown): ApiFailureReason | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+
+  const reason = (payload as Record<string, unknown>).reason;
+  if (typeof reason !== "string") {
+    return null;
+  }
+
+  const trimmed = reason.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function mapErrorCode(status: number): ApiErrorCode {
   if (status === 400 || status === 422) {
     return "validation";
@@ -120,7 +143,12 @@ async function postJson<TResponse>(
     if (!response.ok) {
       const message =
         extractErrorMessage(payload) ?? "Request failed. Please try again.";
-      throw new ApiError(message, mapErrorCode(response.status), response.status);
+      throw new ApiError(
+        message,
+        mapErrorCode(response.status),
+        response.status,
+        extractErrorReason(payload)
+      );
     }
 
     return (payload as TResponse) ?? ({} as TResponse);
@@ -165,7 +193,12 @@ async function postForm<TResponse>(
     if (!response.ok) {
       const message =
         extractErrorMessage(payload) ?? "Request failed. Please try again.";
-      throw new ApiError(message, mapErrorCode(response.status), response.status);
+      throw new ApiError(
+        message,
+        mapErrorCode(response.status),
+        response.status,
+        extractErrorReason(payload)
+      );
     }
 
     return (payload as TResponse) ?? ({} as TResponse);
@@ -210,7 +243,12 @@ async function getJson<TResponse>(
     if (!response.ok) {
       const message =
         extractErrorMessage(payload) ?? "Request failed. Please try again.";
-      throw new ApiError(message, mapErrorCode(response.status), response.status);
+      throw new ApiError(
+        message,
+        mapErrorCode(response.status),
+        response.status,
+        extractErrorReason(payload)
+      );
     }
 
     return (payload as TResponse) ?? ({} as TResponse);

@@ -63,6 +63,7 @@ _jobs_schema_lock = threading.Lock()
 _jobs_optional_columns: Dict[str, bool] = {
     "updated_at": True,
     "error": True,
+    "reason": True,
 }
 QUALITY_HEIGHTS: Dict[str, int] = {
     "240p": 240,
@@ -154,6 +155,38 @@ def _normalize_job_error(value: Any) -> Optional[str]:
     return trimmed if trimmed else None
 
 
+def _normalize_job_reason(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    trimmed = value.strip()
+    return trimmed if trimmed else None
+
+
+def _is_youtube_blocked_error(error_message: Optional[str]) -> bool:
+    lowered = str(error_message or "").lower()
+    if not lowered:
+        return False
+    return any(
+        token in lowered
+        for token in (
+            "youtube_blocked",
+            "youtube_bot_check_required",
+            "sign in to confirm",
+            "not a bot",
+            "http error 403",
+            "http error 429",
+            "status code: 403",
+            "status code: 429",
+        )
+    )
+
+
+def _derive_failure_reason(error_message: Optional[str]) -> Optional[str]:
+    if _is_youtube_blocked_error(error_message):
+        return "youtube_blocked"
+    return None
+
+
 def _jobs_column_enabled(column: str) -> bool:
     with _jobs_schema_lock:
         return bool(_jobs_optional_columns.get(column, False))
@@ -181,7 +214,7 @@ def _has_missing_jobs_column_error(error_message: str, column: str) -> bool:
 
 def _apply_jobs_schema_hints(error_message: str) -> bool:
     changed = False
-    for column in ("updated_at", "error"):
+    for column in ("updated_at", "error", "reason"):
         if _jobs_column_enabled(column) and _has_missing_jobs_column_error(
             error_message, column
         ):
@@ -196,6 +229,8 @@ def _jobs_select_fields() -> str:
         fields.append("updated_at")
     if _jobs_column_enabled("error"):
         fields.append("error")
+    if _jobs_column_enabled("reason"):
+        fields.append("reason")
     return ",".join(fields)
 
 
@@ -210,6 +245,8 @@ def _build_job_insert_payload(job_id: str, status: str, now_iso: str) -> Dict[st
         payload["updated_at"] = now_iso
     if _jobs_column_enabled("error"):
         payload["error"] = None
+    if _jobs_column_enabled("reason"):
+        payload["reason"] = None
     return payload
 
 
@@ -217,6 +254,7 @@ def _build_job_update_payload(
     status: str,
     result: Optional[List[str]] = None,
     error: Optional[str] = None,
+    reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "status": status,
@@ -227,6 +265,8 @@ def _build_job_update_payload(
         payload["result"] = result
     if error is not None and _jobs_column_enabled("error"):
         payload["error"] = error
+    if reason is not None and _jobs_column_enabled("reason"):
+        payload["reason"] = reason
     return payload
 
 
@@ -330,11 +370,17 @@ def _update_job_in_db(
     status: str,
     result: Optional[List[str]] = None,
     error: Optional[str] = None,
+    reason: Optional[str] = None,
 ) -> None:
     if not supabase:
         return
     for attempt in range(1, 3):
-        payload = _build_job_update_payload(status, result=result, error=error)
+        payload = _build_job_update_payload(
+            status,
+            result=result,
+            error=error,
+            reason=reason,
+        )
         try:
             supabase.table("jobs").update(payload).eq("job_id", job_id).execute()
             return
@@ -384,6 +430,7 @@ def _fetch_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
                     "created_at": row.get("created_at"),
                     "updated_at": row.get("updated_at"),
                     "error": row.get("error"),
+                    "reason": row.get("reason"),
                 }
             return None
         except Exception as exc:
@@ -416,6 +463,7 @@ def _fetch_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
                 "created_at": row.get("created_at"),
                 "updated_at": None,
                 "error": None,
+                "reason": None,
             }
     except Exception as fallback_exc:
         logger.warning(
@@ -434,12 +482,14 @@ def _set_job_state(
     storage_paths: Optional[List[str]] = None,
     run_dir: Optional[str] = None,
     error: Optional[str] = None,
+    reason: Optional[str] = None,
     persist_db: bool = False,
 ) -> None:
     now_ts = time.time()
     db_status = "processing"
     db_result: Optional[List[str]] = None
     db_error: Optional[str] = None
+    db_reason: Optional[str] = None
     with _jobs_lock:
         job = jobs.get(job_id)
         if not job:
@@ -453,6 +503,7 @@ def _set_job_state(
                 "run_dir": None,
                 "storage_paths": [],
                 "error": None,
+                "reason": None,
             }
             jobs[job_id] = job
 
@@ -466,15 +517,24 @@ def _set_job_state(
             job["run_dir"] = run_dir
         if error is not None:
             job["error"] = error
+        if reason is not None:
+            job["reason"] = reason
         job["updated_ts"] = now_ts
 
         db_status = str(job.get("status", "processing"))
         db_result = _to_unique_storage_paths(job.get("storage_paths") or job.get("result") or [])
         raw_error = job.get("error")
         db_error = str(raw_error).strip() if isinstance(raw_error, str) and raw_error.strip() else None
+        db_reason = _normalize_job_reason(job.get("reason"))
 
     if persist_db:
-        _update_job_in_db(job_id, status=db_status, result=db_result, error=db_error)
+        _update_job_in_db(
+            job_id,
+            status=db_status,
+            result=db_result,
+            error=db_error,
+            reason=db_reason,
+        )
 
 
 def _rehydrate_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
@@ -485,6 +545,7 @@ def _rehydrate_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
     status = str(db_job.get("status", "unknown"))
     storage_paths = _to_unique_storage_paths(db_job.get("result") or [])
     db_error = _normalize_job_error(db_job.get("error"))
+    db_reason = _normalize_job_reason(db_job.get("reason"))
     now_ts = time.time()
 
     with _jobs_lock:
@@ -502,6 +563,8 @@ def _rehydrate_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
                 )
             if db_error is None:
                 db_error = _normalize_job_error(existing.get("error"))
+            if db_reason is None:
+                db_reason = _normalize_job_reason(existing.get("reason"))
             run_dir = existing.get("run_dir")
             created_at = db_job.get("created_at") or existing.get("created_at")
         else:
@@ -515,6 +578,7 @@ def _rehydrate_job_from_db(job_id: str) -> Optional[Dict[str, Any]]:
             "storage_paths": storage_paths,
             "run_dir": run_dir,
             "error": db_error,
+            "reason": db_reason,
             "created_at": created_at,
             "created_ts": now_ts,
             "updated_ts": now_ts,
@@ -563,6 +627,16 @@ def _run_pipeline_with_retries(job_id: str, url: str) -> Dict[str, Any]:
             attempt=attempt,
             error=last_error,
         )
+        if _is_youtube_blocked_error(last_error):
+            _log_job_event(
+                job_id,
+                "stage_abort",
+                stage="pipeline",
+                attempt=attempt,
+                reason="non_retryable",
+                error=last_error,
+            )
+            break
         if attempt < attempts:
             _log_job_event(
                 job_id,
@@ -1223,6 +1297,7 @@ def run_job(job_id: str, url: str, uploaded_source_path: Optional[str] = None) -
                 result=storage_paths,
                 storage_paths=storage_paths,
                 error=error_message,
+                reason=None,
                 persist_db=True,
             )
             _log_job_event(
@@ -1239,6 +1314,7 @@ def run_job(job_id: str, url: str, uploaded_source_path: Optional[str] = None) -
             result=[],
             storage_paths=[],
             error="no_clips_uploaded",
+            reason="no_clips_uploaded",
             persist_db=True,
         )
         _log_job_event(
@@ -1250,15 +1326,22 @@ def run_job(job_id: str, url: str, uploaded_source_path: Optional[str] = None) -
         )
     except Exception as exc:
         error_message = _extract_db_error(exc)
+        failure_reason = _derive_failure_reason(error_message)
         _set_job_state(
             job_id,
             status="failed",
             result=[],
             storage_paths=[],
             error=error_message,
+            reason=failure_reason,
             persist_db=True,
         )
-        _log_job_event(job_id, "job_failed", reason=error_message)
+        _log_job_event(
+            job_id,
+            "job_failed",
+            reason=failure_reason or error_message,
+            error=error_message,
+        )
     finally:
         if uploaded_source_path:
             _cleanup_uploaded_source(uploaded_source_path)
@@ -1368,12 +1451,14 @@ def generate_clips(
     except Exception as exc:
         _release_inflight_slot(job_id)
         error_message = _extract_db_error(exc)
+        failure_reason = _derive_failure_reason(error_message)
         _set_job_state(
             job_id,
             status="failed",
             result=[],
             storage_paths=[],
             error=error_message,
+            reason=failure_reason,
             persist_db=True,
         )
         raise HTTPException(status_code=503, detail="job scheduler unavailable")
@@ -1418,12 +1503,14 @@ if HAS_MULTIPART:
             _release_inflight_slot(job_id)
             _cleanup_uploaded_source(uploaded_source_path)
             error_message = _extract_db_error(exc)
+            failure_reason = _derive_failure_reason(error_message)
             _set_job_state(
                 job_id,
                 status="failed",
                 result=[],
                 storage_paths=[],
                 error=error_message,
+                reason=failure_reason,
                 persist_db=True,
             )
             raise HTTPException(status_code=503, detail="job scheduler unavailable")
@@ -1472,11 +1559,16 @@ def get_result(job_id: str) -> Dict[str, Any]:
         if job:
             status = str(job.get("status", "unknown"))
             if status != "completed":
-                return {
+                response: Dict[str, Any] = {
                     "job_id": job_id,
                     "status": status,
-                    "error": _normalize_job_error(job.get("error")),
                 }
+                reason = _normalize_job_reason(job.get("reason"))
+                if status == "failed":
+                    response["reason"] = reason or _derive_failure_reason(
+                        _normalize_job_error(job.get("error"))
+                    )
+                return response
             raw_paths = job.get("storage_paths") or job.get("result") or []
             storage_paths = _to_unique_storage_paths(raw_paths)
             clips = _build_result_clip_entries(job_id, storage_paths)
@@ -1486,11 +1578,16 @@ def get_result(job_id: str) -> Dict[str, Any]:
     if rebuilt:
         status = str(rebuilt.get("status", "unknown"))
         if status != "completed":
-            return {
+            response = {
                 "job_id": job_id,
                 "status": status,
-                "error": _normalize_job_error(rebuilt.get("error")),
             }
+            reason = _normalize_job_reason(rebuilt.get("reason"))
+            if status == "failed":
+                response["reason"] = reason or _derive_failure_reason(
+                    _normalize_job_error(rebuilt.get("error"))
+                )
+            return response
         raw_paths = rebuilt.get("storage_paths") or rebuilt.get("result") or []
         storage_paths = _to_unique_storage_paths(raw_paths)
         clips = _build_result_clip_entries(job_id, storage_paths)

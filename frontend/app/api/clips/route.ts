@@ -5,7 +5,6 @@ import { assertServerEnv } from "@/lib/server/env";
 export const dynamic = "force-dynamic";
 assertServerEnv("core");
 
-const DEFAULT_BACKEND_BASE_URL = "http://localhost:8000";
 const DEFAULT_GENERATE_PATH = "/generate";
 const DEFAULT_GENERATE_UPLOAD_PATH = "/generate/upload";
 const DEFAULT_RESULT_PATH = "/result";
@@ -24,9 +23,12 @@ type SourcePayload = {
 };
 
 class ClipGenerationFailedError extends Error {
-  constructor(message: string) {
+  reason: string | null;
+
+  constructor(message: string, reason: string | null = null) {
     super(message);
     this.name = "ClipGenerationFailedError";
+    this.reason = reason;
   }
 }
 
@@ -69,9 +71,13 @@ function getBackendConfig(): {
   resultPath: string;
 } {
   const baseUrl =
+    asNonEmptyString(process.env.NEXT_PUBLIC_API_URL) ??
     asNonEmptyString(process.env.BACKEND_API_BASE_URL) ??
-    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL) ??
-    DEFAULT_BACKEND_BASE_URL;
+    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL);
+
+  if (!baseUrl) {
+    throw new Error("Missing backend API URL. Set NEXT_PUBLIC_API_URL.");
+  }
 
   const generatePath =
     asNonEmptyString(process.env.BACKEND_GENERATE_PATH) ??
@@ -215,25 +221,31 @@ function readJobError(payload: unknown): string | null {
   return asNonEmptyString(record.error);
 }
 
-function mapJobFailureMessage(error: string | null): string {
-  const normalized = (error ?? "").toLowerCase().trim();
+function readJobReason(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
 
-  if (!normalized || normalized === "no_clips_uploaded") {
+  const record = payload as Record<string, unknown>;
+  return asNonEmptyString(record.reason);
+}
+
+function mapJobFailureMessage(reason: string | null, error: string | null): string {
+  if (reason === "youtube_blocked") {
+    return "This video could not be processed due to YouTube restrictions.";
+  }
+
+  const normalizedError = (error ?? "").toLowerCase().trim();
+  if (!normalizedError || normalizedError === "no_clips_uploaded") {
     return "No clips were generated for this source. Please try a different video.";
   }
-  if (
-    normalized.includes("youtube_bot_check_required") ||
-    (normalized.includes("sign in to confirm") && normalized.includes("not a bot"))
-  ) {
-    return "YouTube blocked automated access for this video. Try another URL or configure backend cookies (YTDLP_COOKIES_FROM_BROWSER / YTDLP_COOKIES_FILE).";
+  if (normalizedError.includes("youtube_private_video")) {
+    return "This video is private or restricted. Please try a different URL.";
   }
-  if (normalized.includes("youtube_private_video")) {
-    return "This video requires authentication. Configure backend cookies and retry.";
-  }
-  if (normalized.includes("youtube_video_unavailable")) {
+  if (normalizedError.includes("youtube_video_unavailable")) {
     return "This YouTube video is unavailable. Please try a different URL.";
   }
-  if (normalized.includes("pipeline_timeout")) {
+  if (normalizedError.includes("pipeline_timeout")) {
     return "Clip generation is taking too long. Please try again.";
   }
 
@@ -280,8 +292,10 @@ async function waitForResult(
     }
 
     if (status === "failed") {
+      const reason = readJobReason(result.payload);
       throw new ClipGenerationFailedError(
-        mapJobFailureMessage(readJobError(result.payload))
+        mapJobFailureMessage(reason, readJobError(result.payload)),
+        reason
       );
     }
 
@@ -360,15 +374,18 @@ export async function POST(request: Request) {
     );
   }
 
-  const config = getBackendConfig();
-  const backendGenerateEndpoint = buildBackendUrl(
-    config.baseUrl,
-    config.generatePath
-  );
-  const backendUploadEndpoint = buildBackendUrl(
-    config.baseUrl,
-    config.generateUploadPath
-  );
+  let config: ReturnType<typeof getBackendConfig>;
+  try {
+    config = getBackendConfig();
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Backend API URL is not configured.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+  const backendGenerateEndpoint = buildBackendUrl(config.baseUrl, config.generatePath);
+  const backendUploadEndpoint = buildBackendUrl(config.baseUrl, config.generateUploadPath);
 
   try {
     let result: BackendResult;
@@ -434,7 +451,13 @@ export async function POST(request: Request) {
     );
   } catch (error) {
     if (error instanceof ClipGenerationFailedError) {
-      return NextResponse.json({ error: error.message }, { status: 502 });
+      return NextResponse.json(
+        {
+          error: error.message,
+          reason: error.reason,
+        },
+        { status: 502 }
+      );
     }
 
     if (error instanceof Error && error.message) {

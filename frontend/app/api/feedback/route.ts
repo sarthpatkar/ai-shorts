@@ -4,7 +4,6 @@ import { assertServerEnv } from "@/lib/server/env";
 export const dynamic = "force-dynamic";
 assertServerEnv("core");
 
-const DEFAULT_BACKEND_BASE_URL = "http://localhost:8000";
 const DEFAULT_FEEDBACK_PATH = "/feedback";
 const REQUEST_TIMEOUT_MS = 1000 * 30;
 
@@ -32,9 +31,13 @@ function buildBackendUrl(baseUrl: string, path: string): string {
 
 function getBackendConfig(): { baseUrl: string; feedbackPath: string } {
   const baseUrl =
+    asNonEmptyString(process.env.NEXT_PUBLIC_API_URL) ??
     asNonEmptyString(process.env.BACKEND_API_BASE_URL) ??
-    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL) ??
-    DEFAULT_BACKEND_BASE_URL;
+    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL);
+
+  if (!baseUrl) {
+    throw new Error("Missing backend API URL. Set NEXT_PUBLIC_API_URL.");
+  }
 
   const feedbackPath =
     asNonEmptyString(process.env.BACKEND_FEEDBACK_PATH) ??
@@ -128,7 +131,16 @@ export async function POST(request: Request) {
     );
   }
 
-  const config = getBackendConfig();
+  let config: ReturnType<typeof getBackendConfig>;
+  try {
+    config = getBackendConfig();
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Backend API URL is not configured.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
   const endpoint = buildBackendUrl(config.baseUrl, config.feedbackPath);
 
   try {

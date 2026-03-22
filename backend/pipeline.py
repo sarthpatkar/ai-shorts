@@ -184,11 +184,8 @@ def _is_non_retryable_download_error(error_message: Optional[str]) -> bool:
     return any(
         token in lowered
         for token in (
-            "youtube_bot_check_required",
-            "http_403",
-            "http error 403",
-            "http_429",
-            "http error 429",
+            "youtube_blocked",
+            "youtube_private_video",
         )
     )
 

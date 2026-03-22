@@ -111,6 +111,10 @@ function toFriendlyError(error: unknown): string {
     return fallback;
   }
 
+  if (error.reason === "youtube_blocked") {
+    return "⚠️ This video could not be processed due to YouTube restrictions.";
+  }
+
   const raw = error.message.toLowerCase();
   if (raw.includes("restricted") || raw.includes("private")) {
     return "This video may be restricted. Try another link.";
@@ -144,6 +148,8 @@ export default function Home() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [revealedCount, setRevealedCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [failureReason, setFailureReason] = useState<string | null>(null);
+  const [openFilePickerSignal, setOpenFilePickerSignal] = useState(0);
   const [jobId, setJobId] = useState<string | null>(null);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [feedbackStateMap, setFeedbackStateMap] = useState<Record<string, FeedbackState>>({});
@@ -266,11 +272,13 @@ export default function Home() {
       const youtubeUrl = (input.youtubeUrl ?? "").trim();
       const videoFile = input.videoFile ?? null;
       if (!youtubeUrl && !videoFile) {
+        setFailureReason(null);
         setErrorMessage("Provide a YouTube URL or upload a video file.");
         return;
       }
 
       if (!input.userConfirmedRights) {
+        setFailureReason(null);
         setErrorMessage("Please confirm rights before processing.");
         return;
       }
@@ -280,6 +288,7 @@ export default function Home() {
 
       setLoading(true);
       setErrorMessage(null);
+      setFailureReason(null);
       setViewerIndex(null);
       setJobId(null);
       setClips([]);
@@ -326,6 +335,7 @@ export default function Home() {
           return;
         }
         setClips([]);
+        setFailureReason(error instanceof ApiError ? error.reason ?? null : null);
         setErrorMessage(toFriendlyError(error));
       } finally {
         if (generationRequestIdRef.current === requestId) {
@@ -390,6 +400,7 @@ export default function Home() {
   const openDownloadModal = useCallback(
     async (clipId: string) => {
       if (!jobId) {
+        setFailureReason(null);
         setErrorMessage("Missing job context for download.");
         return;
       }
@@ -670,9 +681,27 @@ export default function Home() {
           onChange={setInputUrl}
           onGenerate={handleGenerate}
           loading={loading}
+          openFilePickerSignal={openFilePickerSignal}
         />
 
-        {errorMessage && <p className="status-note status-error">{errorMessage}</p>}
+        {errorMessage && (
+          <div className="status-note status-error">
+            <p>{errorMessage}</p>
+            {failureReason === "youtube_blocked" && (
+              <>
+                <p>👉 Try another video or upload your own file.</p>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setOpenFilePickerSignal((previous) => previous + 1)}
+                  disabled={loading}
+                >
+                  Upload Video Instead
+                </button>
+              </>
+            )}
+          </div>
+        )}
         {loading && <LoadingState revealedCount={displayedClips.length} />}
 
         {!loading && !errorMessage && clips.length === 0 && (

@@ -1,21 +1,10 @@
 import os
-import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 import yt_dlp
-
-
-_BROWSER_COOKIE_SPEC_RE = re.compile(
-    r"""(?x)
-    (?P<name>[^+:]+)
-    (?:\s*\+\s*(?P<keyring>[^:]+))?
-    (?:\s*:\s*(?!:)(?P<profile>.+?))?
-    (?:\s*::\s*(?P<container>.+))?
-    """
-)
 
 
 def _parse_js_runtimes(raw_value: str) -> Dict[str, Dict[str, str]]:
@@ -42,43 +31,36 @@ def _parse_js_runtimes(raw_value: str) -> Dict[str, Dict[str, str]]:
     return runtimes
 
 
-def _parse_cookies_from_browser(
-    raw_value: str,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
-    value = str(raw_value or "").strip()
-    match = _BROWSER_COOKIE_SPEC_RE.fullmatch(value)
-    if not match:
-        raise ValueError("invalid_YTDLP_COOKIES_FROM_BROWSER")
-
-    browser_name = str(match.group("name") or "").strip().lower()
-    profile = match.group("profile")
-    keyring = match.group("keyring")
-    container = match.group("container")
-
-    normalized_profile = str(profile).strip() if profile else None
-    normalized_keyring = str(keyring).strip().upper() if keyring else None
-    normalized_container = str(container).strip() if container else None
-    return (
-        browser_name,
-        normalized_profile,
-        normalized_keyring,
-        normalized_container,
+def _is_youtube_blocked_message(lowered_message: str) -> bool:
+    return any(
+        token in lowered_message
+        for token in (
+            "sign in to confirm you're not a bot",
+            "sign in to confirm you’re not a bot",
+            "confirm you're not a bot",
+            "confirm you’re not a bot",
+            "automated access to youtube",
+            "this request has been blocked",
+            "requested format is not available from this client",
+        )
     )
+
+
+def _tag_youtube_blocked(message: str) -> str:
+    detail = message.strip() if isinstance(message, str) else ""
+    return f"youtube_blocked: {detail or 'blocked_by_youtube'}"
 
 
 def _normalize_download_error(exc: Exception) -> str:
     message = str(exc).strip()
     lowered = message.lower()
 
+    if _is_youtube_blocked_message(lowered):
+        return _tag_youtube_blocked(message)
     if "http error 429" in lowered or "status code: 429" in lowered:
-        return "http_429_too_many_requests"
+        return _tag_youtube_blocked(message or "http_429_too_many_requests")
     if "http error 403" in lowered or "status code: 403" in lowered:
-        return "http_403_forbidden"
-    if "sign in to confirm" in lowered and "not a bot" in lowered:
-        return (
-            "youtube_bot_check_required: configure YTDLP_COOKIES_FROM_BROWSER "
-            "(for example, chrome) or YTDLP_COOKIES_FILE, then retry"
-        )
+        return _tag_youtube_blocked(message or "http_403_forbidden")
     if "private video" in lowered:
         return "youtube_private_video: this video requires authentication"
     if "video unavailable" in lowered:
@@ -156,14 +138,12 @@ def _build_ydl_opts(
     target: Path,
     *,
     quality_format: str,
-    include_cookies: bool,
-    cookies_file: str,
-    cookies_from_browser: str,
+    player_clients: List[str],
 ) -> Dict[str, Any]:
     opts: Dict[str, Any] = {
         "format": quality_format,
         "format_sort": [
-            "res:1080",
+            "res:720",
             "fps",
             "vcodec:av01",
             "vcodec:vp9.2",
@@ -178,14 +158,12 @@ def _build_ydl_opts(
         "quiet": True,
         "outtmpl": str(target),
         "js_runtimes": _parse_js_runtimes(os.environ.get("YTDLP_JS_RUNTIMES", "")),
+        "extractor_args": {
+            "youtube": {
+                "player_client": list(player_clients),
+            }
+        },
     }
-
-    if include_cookies and cookies_file:
-        opts["cookiefile"] = str(Path(cookies_file).expanduser())
-    if include_cookies and cookies_from_browser:
-        opts["cookiesfrombrowser"] = _parse_cookies_from_browser(
-            cookies_from_browser
-        )
     return opts
 
 
@@ -203,38 +181,35 @@ def download_video(url: str, output_path: str) -> str:
 
     normal_quality_format = os.environ.get(
         "YTDLP_FORMAT",
-        "bv*[height<=1080][vcodec!=none]+ba[acodec!=none]/b[height<=1080]/best",
+        "bv*[height<=720][vcodec!=none]+ba[acodec!=none]/b[height<=720]/best[height<=720]/best",
     )
     fallback_quality_format = os.environ.get(
         "YTDLP_FALLBACK_FORMAT",
-        "bv*[height<=720][vcodec!=none]+ba[acodec!=none]/b[height<=720]/best[height<=720]/best",
+        "bv*[height<=480][vcodec!=none]+ba[acodec!=none]/b[height<=480]/best[height<=480]/best",
     )
-    cookies_file = str(os.environ.get("YTDLP_COOKIES_FILE", "")).strip()
-    cookies_from_browser = str(
-        os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "")
-    ).strip()
-    cookies_available = bool(cookies_file or cookies_from_browser)
+    primary_clients = [client.strip() for client in str(os.environ.get("YTDLP_PLAYER_CLIENTS", "android,web")).split(",") if client.strip()]
+    if not primary_clients:
+        primary_clients = ["android", "web"]
+    alternate_clients = list(reversed(primary_clients))
 
-    strategy_steps: List[Tuple[str, bool, str]] = [
-        ("normal", False, normal_quality_format),
+    strategy_steps = [
+        ("normal_primary_clients", normal_quality_format, primary_clients),
+        ("normal_alternate_clients", normal_quality_format, alternate_clients),
+        ("lower_quality_primary_clients", fallback_quality_format, primary_clients),
+        ("lower_quality_alternate_clients", fallback_quality_format, alternate_clients),
     ]
-    if cookies_available:
-        strategy_steps.append(("cookies", True, normal_quality_format))
-    strategy_steps.append(
-        ("lower_quality", cookies_available, fallback_quality_format)
-    )
 
     seen = set()
-    deduped_steps: List[Tuple[str, bool, str]] = []
-    for label, with_cookies, quality in strategy_steps:
-        key = (with_cookies, quality)
+    deduped_steps: List[Tuple[str, str, List[str]]] = []
+    for label, quality, player_clients in strategy_steps:
+        key = (quality, tuple(player_clients))
         if key in seen:
             continue
         seen.add(key)
-        deduped_steps.append((label, with_cookies, quality))
+        deduped_steps.append((label, quality, player_clients))
 
     last_error: Optional[str] = None
-    for _, with_cookies, quality in deduped_steps:
+    for _, quality, player_clients in deduped_steps:
         if target.exists():
             try:
                 target.unlink()
@@ -243,9 +218,7 @@ def download_video(url: str, output_path: str) -> str:
         ydl_opts = _build_ydl_opts(
             target=target,
             quality_format=quality,
-            include_cookies=with_cookies,
-            cookies_file=cookies_file,
-            cookies_from_browser=cookies_from_browser,
+            player_clients=player_clients,
         )
         try:
             _download_once(url, ydl_opts)
@@ -254,6 +227,8 @@ def download_video(url: str, output_path: str) -> str:
             last_error = "downloaded_file_missing_or_empty"
         except Exception as exc:
             last_error = _normalize_download_error(exc)
+            if "youtube_blocked" in str(last_error).lower():
+                break
 
     if target.exists() and not _is_nonempty_file(target):
         try:

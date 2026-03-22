@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type GenerateInput = {
   youtubeUrl?: string;
@@ -13,6 +13,7 @@ type InputSectionProps = {
   onChange: (value: string) => void;
   onGenerate: (input: GenerateInput) => void | Promise<void>;
   loading: boolean;
+  openFilePickerSignal?: number;
 };
 
 export default function InputSection({
@@ -20,14 +21,26 @@ export default function InputSection({
   onChange,
   onGenerate,
   loading,
+  openFilePickerSignal = 0,
 }: InputSectionProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [userConfirmedRights, setUserConfirmedRights] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const trimmedUrl = useMemo(() => value.trim(), [value]);
   const canSubmit =
     !loading &&
     userConfirmedRights &&
     (trimmedUrl.length > 0 || Boolean(selectedFile));
+
+  useEffect(() => {
+    if (loading) {
+      return;
+    }
+    if (openFilePickerSignal <= 0) {
+      return;
+    }
+    fileInputRef.current?.click();
+  }, [loading, openFilePickerSignal]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -77,6 +90,7 @@ export default function InputSection({
         </label>
         <div className="file-input-wrap">
           <input
+            ref={fileInputRef}
             id="video-file"
             type="file"
             accept="video/*,.mp4,.mov,.m4v,.webm,.mkv,.avi"

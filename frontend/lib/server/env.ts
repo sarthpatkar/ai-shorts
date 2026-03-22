@@ -13,9 +13,9 @@ export const serverEnv = {
   supabaseAnonKey: optional("NEXT_PUBLIC_SUPABASE_ANON_KEY"),
   supabaseServiceRoleKey: optional("SUPABASE_SERVICE_ROLE_KEY"),
   backendBaseUrl:
+    optional("NEXT_PUBLIC_API_URL") ||
     optional("BACKEND_API_BASE_URL") ||
-    optional("NEXT_PUBLIC_BACKEND_API_BASE_URL") ||
-    "http://localhost:8000",
+    optional("NEXT_PUBLIC_BACKEND_API_BASE_URL"),
   backendInternalToken: optional("BACKEND_INTERNAL_API_TOKEN"),
   stripeSecretKey: optional("STRIPE_SECRET_KEY"),
   stripeWebhookSecret: optional("STRIPE_WEBHOOK_SECRET"),
@@ -59,7 +59,7 @@ function isLocalHostname(hostname: string): boolean {
 
 function requireProductionBackendUrl(): void {
   const parsed = requireValidUrl(
-    "BACKEND_API_BASE_URL/NEXT_PUBLIC_BACKEND_API_BASE_URL",
+    "NEXT_PUBLIC_API_URL/BACKEND_API_BASE_URL/NEXT_PUBLIC_BACKEND_API_BASE_URL",
     serverEnv.backendBaseUrl
   );
   if (isLocalHostname(parsed.hostname)) {
@@ -111,6 +111,11 @@ export function normalizeBackendPath(path: string, fallback: string): string {
 }
 
 export function buildBackendUrl(path: string): string {
+  if (!serverEnv.backendBaseUrl) {
+    throw new Error(
+      "Missing backend API URL. Set NEXT_PUBLIC_API_URL."
+    );
+  }
   const base = serverEnv.backendBaseUrl.endsWith("/")
     ? serverEnv.backendBaseUrl
     : `${serverEnv.backendBaseUrl}/`;

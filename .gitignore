@@ -58,3 +58,6 @@ backend/temp/
 # LOGS
 # ----------------------------
 *.log
+
+cookies.txt
+*cookies*.txt

@@ -5,7 +5,6 @@ import { assertServerEnv } from "@/lib/server/env";
 export const dynamic = "force-dynamic";
 assertServerEnv("core");
 
-const DEFAULT_BACKEND_BASE_URL = "http://localhost:8000";
 const DEFAULT_RESULT_PATH = "/result";
 const REQUEST_TIMEOUT_MS = 1000 * 60;
 
@@ -29,9 +28,13 @@ function buildBackendUrl(baseUrl: string, path: string): string {
 
 function getBackendConfig(): { baseUrl: string; resultPath: string } {
   const baseUrl =
+    asNonEmptyString(process.env.NEXT_PUBLIC_API_URL) ??
     asNonEmptyString(process.env.BACKEND_API_BASE_URL) ??
-    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL) ??
-    DEFAULT_BACKEND_BASE_URL;
+    asNonEmptyString(process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL);
+
+  if (!baseUrl) {
+    throw new Error("Missing backend API URL. Set NEXT_PUBLIC_API_URL.");
+  }
 
   const resultPath =
     asNonEmptyString(process.env.BACKEND_RESULT_PATH) ??
@@ -57,14 +60,12 @@ async function parseJsonSafe(response: Response): Promise<unknown> {
   }
 }
 
-function mapFailureMessage(error: string | null): string {
-  const normalized = (error ?? "").toLowerCase();
-  if (
-    normalized.includes("youtube_bot_check_required") ||
-    (normalized.includes("sign in to confirm") && normalized.includes("not a bot"))
-  ) {
-    return "This video appears restricted. Try another source.";
+function mapFailureMessage(reason: string | null, error: string | null): string {
+  if (reason === "youtube_blocked") {
+    return "This video could not be processed due to YouTube restrictions.";
   }
+
+  const normalized = (error ?? "").toLowerCase();
   if (normalized.includes("youtube_private_video")) {
     return "This video is private or restricted.";
   }
@@ -81,7 +82,16 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "jobId is required." }, { status: 400 });
   }
 
-  const config = getBackendConfig();
+  let config: ReturnType<typeof getBackendConfig>;
+  try {
+    config = getBackendConfig();
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : "Backend API URL is not configured.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
   const endpoint = buildBackendUrl(
     config.baseUrl,
     `${config.resultPath.replace(/\/$/, "")}/${encodeURIComponent(jobId)}`
@@ -118,15 +128,20 @@ export async function GET(request: Request) {
 
     let status = "processing";
     let errorMessage: string | null = null;
+    let reason: string | null = null;
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
       const record = payload as Record<string, unknown>;
       status = asNonEmptyString(record.status) ?? "processing";
       errorMessage = asNonEmptyString(record.error);
+      reason = asNonEmptyString(record.reason);
     }
 
     if (status === "failed") {
       return NextResponse.json(
-        { error: mapFailureMessage(errorMessage) },
+        {
+          error: mapFailureMessage(reason, errorMessage),
+          reason,
+        },
         { status: 502 }
       );
     }
